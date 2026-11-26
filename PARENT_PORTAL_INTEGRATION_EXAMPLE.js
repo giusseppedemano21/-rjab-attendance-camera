@@ -3,7 +3,7 @@
  * Implement server-side ticket validation and authenticated saving in Apps Script.
  * Never trust the client action, client timestamp, or GPS accuracy without policy checks.
  */
-const RJAB_CAMERA_ORIGIN = "https://giusseppedemano21.github.io";
+const RJAB_CAMERA_ORIGIN = "https://YOUR_GITHUB_USERNAME.github.io";
 let rjabCameraWindow = null;
 let activeAttendanceTicket = null;
 
