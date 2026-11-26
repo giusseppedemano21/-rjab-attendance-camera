@@ -5,8 +5,9 @@ body { overscroll-behavior-y: contain; }
 .container { min-height: var(--attendance-vh); }
 .attendance-context {
   width: min(100%, 520px);
-  margin: -4px auto 0;
-  padding: 8px 12px;
+  margin: 10px auto 0;
+  padding: 9px 12px;
+  line-height: 1.35;
   border: 1px solid rgba(211, 32, 41, .48);
   border-radius: 10px;
   background: rgba(70, 8, 13, .62);
@@ -19,5 +20,5 @@ body { overscroll-behavior-y: contain; }
 #camera, #preview { max-height: max(240px, calc(var(--attendance-vh) - 320px)); }
 @media (max-height: 700px) {
   .container { gap: 10px; }
-  .attendance-context { padding: 6px 10px; }
+  .attendance-context { margin-top: 8px; padding: 6px 10px; }
 }
