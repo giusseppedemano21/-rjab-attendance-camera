@@ -12,7 +12,10 @@
     <title>RJAB Attendance Camera</title>
 
     <link rel="stylesheet" href="stylev3.css?v=20261124-attendance-1">
-    <link rel="stylesheet" href="attendance-fit.css?v=20261126-phase2g1">
+    <link rel="stylesheet" href="attendance-fit.css?v=20261126-phase2g2">
+    <style>
+      #biometricAiWorkerCompareBtn { grid-column: 1 / -1; background: #075985; border-color: rgba(125, 211, 252, .55); }
+    </style>
 
 </head>
 
@@ -211,13 +214,13 @@
         <div class="biometric-ai-lab__eyebrow">RJAB BIOMETRIC AI · TEST MODE</div>
         <h2>Face Recognition & PAD Diagnostics</h2>
         <p class="biometric-ai-lab__notice">
-            Experimental testing only. The temporary reference stays in this browser tab and is not sent to RJAB or stored.
-            Scores are not an attendance approval or proof of liveness.
+            Experimental testing only. The local reference stays in this browser tab. The server-comparison test sends only the current 512-value candidate embedding through your authenticated RJAB portal to compare with your encrypted PENDING VALIDATION template. No selfie image is sent by that test. Scores are not proof of identity or liveness.
         </p>
         <div class="biometric-ai-lab__status" id="biometricAiModelStatus">AI models have not been loaded.</div>
         <div class="biometric-ai-lab__actions">
             <button type="button" id="biometricAiReferenceBtn" disabled>Capture Test Reference (3 samples)</button>
             <button type="button" id="biometricAiCompareBtn" disabled>Compare Current Face (3 samples)</button>
+            <button type="button" id="biometricAiWorkerCompareBtn" disabled>Compare with Registered Template (Server Test)</button>
             <button type="button" id="biometricAiPadBtn" disabled>Run PAD Diagnostic (5 frames)</button>
             <button type="button" id="biometricAiClearBtn" disabled>Clear Test Reference</button>
         </div>
@@ -235,7 +238,7 @@
 
 </div>
 
-<script type="module" src="script.js?v=20261126-phase2g1"></script>
+<script type="module" src="script.js?v=20261126-phase2g2"></script>
 
 <footer class="rjab-footer">
   <div class="rjab-footer-divider"></div>
