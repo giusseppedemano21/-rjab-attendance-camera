@@ -25,6 +25,7 @@ let noFaceFrames = 0;
 // launches do not download or initialize the EdgeFace/MiniFASNet models.
 const biometricAiTestMode = new URLSearchParams(window.location.search).get("aiTest") === "1";
 const BIOMETRIC_AI_MODEL_CONFIG = Object.freeze({
+    MODEL_VERSION: "EdgeFace-XXS",
     LANDMARKER_URL: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
     ORT_WASM_URL: "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/dist/",
     EDGEFACE_URL: "./edgeface_xxs.onnx",
@@ -165,10 +166,12 @@ function updateBiometricAiButtons() {
     const live = !!(biometricAiReady && app && app.stream && video && !video.hidden && video.readyState >= 2 && video.videoWidth > 0);
     const ref = document.getElementById("biometricAiReferenceBtn");
     const compare = document.getElementById("biometricAiCompareBtn");
+    const workerCompare = document.getElementById("biometricAiWorkerCompareBtn");
     const pad = document.getElementById("biometricAiPadBtn");
     const clear = document.getElementById("biometricAiClearBtn");
     if (ref) ref.disabled = !live || biometricAiBusy;
     if (compare) compare.disabled = !live || !biometricReferenceEmbedding || biometricAiBusy;
+    if (workerCompare) workerCompare.disabled = !live || !biometricAiReady || biometricAiBusy;
     if (pad) pad.disabled = !live || biometricAiBusy;
     if (clear) clear.disabled = !biometricReferenceEmbedding || biometricAiBusy;
 }
@@ -499,10 +502,85 @@ async function runBiometricPadDiagnostic() {
     }
 }
 
+async function requestRegisteredTemplateComparisonTest(candidateEmbedding) {
+    if (!app || !app.ticket || !app.parentOrigin || !attendanceParentWindow) {
+        throw new Error("Open the camera from the authenticated RJAB Employee Portal before running the server comparison test.");
+    }
+    const requestId = (window.crypto && typeof window.crypto.randomUUID === "function")
+        ? window.crypto.randomUUID().replace(/-/g, "")
+        : (Date.now().toString(36) + Math.random().toString(36).slice(2, 18));
+    const candidate = Array.from(candidateEmbedding, function (value) { return Number(value); });
+
+    return await new Promise(function (resolve, reject) {
+        const timeoutId = window.setTimeout(function () {
+            if (pendingBiometricWorkerCompare && pendingBiometricWorkerCompare.requestId === requestId) {
+                pendingBiometricWorkerCompare = null;
+            }
+            candidate.fill(0);
+            reject(new Error("No response was received from the RJAB portal. Keep the portal tab open and try again with a new camera session."));
+        }, 60000);
+
+        pendingBiometricWorkerCompare = {
+            requestId: requestId,
+            resolve: resolve,
+            reject: reject,
+            timeoutId: timeoutId
+        };
+
+        try {
+            attendanceParentWindow.postMessage({
+                type: "RJAB_BIOMETRIC_COMPARE_TEMPLATE_TEST",
+                version: 1,
+                ticket: app.ticket,
+                requestId: requestId,
+                modelVersion: BIOMETRIC_AI_MODEL_CONFIG.MODEL_VERSION,
+                dimension: candidate.length,
+                embedding: candidate
+            }, app.parentOrigin);
+            // postMessage performs a structured clone synchronously.
+            candidate.fill(0);
+        } catch (error) {
+            window.clearTimeout(timeoutId);
+            pendingBiometricWorkerCompare = null;
+            candidate.fill(0);
+            reject(new Error("Unable to send the test vector to the RJAB portal: " + (error && error.message ? error.message : String(error))));
+        }
+    });
+}
+
+async function runRegisteredTemplateComparisonTest() {
+    if (biometricAiBusy) return;
+    biometricAiBusy = true;
+    updateBiometricAiButtons();
+    let candidate = null;
+    try {
+        setBiometricAiResult("Capturing 3 face samples for a test-only comparison with your encrypted pending registration…");
+        candidate = await captureBiometricTestEmbeddingSet("Registered-template comparison");
+        setBiometricAiResult("Sending the candidate vector through the authenticated RJAB portal. The browser will not receive the registered template…");
+        const result = await requestRegisteredTemplateComparisonTest(candidate);
+        const score = Number(result.similarity);
+        const elapsed = Number(result.workerElapsedMs) || 0;
+        if (!Number.isFinite(score)) throw new Error("The Worker returned an invalid similarity score.");
+        setBiometricAiResult(
+            "SERVER TEMPLATE COMPARISON · Similarity: " + score.toFixed(4) +
+            ". Worker elapsed (wall-clock): " + elapsed.toFixed(2) + " ms. Record status: " +
+            String(result.recordStatus || "PENDING_VALIDATION") +
+            ". No acceptance threshold was applied. The registered template is still client-submitted/untrusted; this test cannot authorize attendance or payroll."
+        );
+    } catch (error) {
+        setBiometricAiResult("Registered-template comparison failed: " + (error && error.message ? error.message : String(error)));
+    } finally {
+        if (candidate && typeof candidate.fill === "function") candidate.fill(0);
+        biometricAiBusy = false;
+        updateBiometricAiButtons();
+    }
+}
+
 function bindBiometricAiTestControls() {
     if (!biometricAiTestMode) return;
     const referenceBtn = document.getElementById("biometricAiReferenceBtn");
     const compareBtn = document.getElementById("biometricAiCompareBtn");
+    const workerCompareBtn = document.getElementById("biometricAiWorkerCompareBtn");
     const padBtn = document.getElementById("biometricAiPadBtn");
     const clearBtn = document.getElementById("biometricAiClearBtn");
     if (referenceBtn) referenceBtn.addEventListener("click", async function () {
@@ -535,6 +613,7 @@ function bindBiometricAiTestControls() {
             updateBiometricAiButtons();
         }
     });
+    if (workerCompareBtn) workerCompareBtn.addEventListener("click", runRegisteredTemplateComparisonTest);
     if (padBtn) padBtn.addEventListener("click", runBiometricPadDiagnostic);
     if (clearBtn) clearBtn.addEventListener("click", function () {
         biometricReferenceEmbedding = null;
@@ -1188,6 +1267,7 @@ try {
 
 let attendanceParentWindow = null;
 let pendingAttendanceAck = null;
+let pendingBiometricWorkerCompare = null;
 
 function validateAttendanceLaunch() {
     if (!app.ticket || app.ticket.length < 24 || app.ticket.length > 512) {
@@ -1216,7 +1296,19 @@ function handleAttendancePortalMessage(event) {
     if (!attendanceParentWindow || event.source !== attendanceParentWindow) return;
     if (event.origin !== app.parentOrigin) return;
     const data = event.data || {};
-    if (data.type !== "RJAB_ATTENDANCE_CAPTURE_ACK" || data.ticket !== app.ticket || !pendingAttendanceAck) return;
+    if (data.ticket !== app.ticket) return;
+
+    if (data.type === "RJAB_BIOMETRIC_COMPARE_TEMPLATE_TEST_RESULT" && Number(data.version) === 1) {
+        if (!pendingBiometricWorkerCompare || data.requestId !== pendingBiometricWorkerCompare.requestId) return;
+        const pendingCompare = pendingBiometricWorkerCompare;
+        pendingBiometricWorkerCompare = null;
+        clearTimeout(pendingCompare.timeoutId);
+        if (data.ok === true) pendingCompare.resolve(data);
+        else pendingCompare.reject(new Error(data.message || "The RJAB portal could not complete the test comparison."));
+        return;
+    }
+
+    if (data.type !== "RJAB_ATTENDANCE_CAPTURE_ACK" || !pendingAttendanceAck) return;
     const pending = pendingAttendanceAck;
     pendingAttendanceAck = null;
     clearTimeout(pending.timeoutId);
