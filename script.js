@@ -1243,7 +1243,8 @@ const app = {
     ticket: "",
     parentOrigin: "",
     type: "",
-    cameraVersion: "attendance-camera-1.1.0-phase2g1"
+    profilePhotoMode: false,
+    cameraVersion: "attendance-camera-1.2.0-profile-photo"
 };
 
 // Bind the optional test controls only after the attendance state exists.
@@ -1256,6 +1257,7 @@ const launchParams = new URLSearchParams(window.location.search);
 app.ticket = launchParams.get("ticket") || "";
 app.parentOrigin = launchParams.get("parentOrigin") || "";
 const requestedMode = String(launchParams.get("mode") || "").trim().toUpperCase();
+app.profilePhotoMode = requestedMode === "PROFILE_PHOTO";
 app.type = requestedMode === "TIMEIN" ? "TIME IN" : requestedMode === "TIMEOUT" ? "TIME OUT" : "";
 
 // Remove ticket and launch parameters from the visible URL immediately.
@@ -1267,14 +1269,15 @@ try {
 
 let attendanceParentWindow = null;
 let pendingAttendanceAck = null;
+let pendingProfilePhotoAck = null;
 let pendingBiometricWorkerCompare = null;
 
 function validateAttendanceLaunch() {
     if (!app.ticket || app.ticket.length < 24 || app.ticket.length > 512) {
         throw new Error("Attendance launch ticket is missing or invalid. Please reopen the camera from the RJAB Employee Portal.");
     }
-    if (!app.type) {
-        throw new Error("Invalid attendance action. Please start again using TIME IN or TIME OUT in the RJAB Employee Portal.");
+    if (!app.type && !app.profilePhotoMode) {
+        throw new Error("Invalid camera mode. Please start again from the RJAB Employee Portal.");
     }
     let parsedParent;
     try { parsedParent = new URL(app.parentOrigin); }
@@ -1287,7 +1290,9 @@ function validateAttendanceLaunch() {
     else throw new Error("Please open this camera from the RJAB Employee Portal. Direct access is not allowed.");
 
     const context = document.getElementById("attendanceContext");
-    if (context) context.textContent = "RJAB SECURE " + app.type + " CAPTURE";
+    if (context) context.textContent = app.profilePhotoMode ? "RJAB EMPLOYEE PROFILE PHOTO" : "RJAB SECURE " + app.type + " CAPTURE";
+    const subtitle = document.querySelector(".subtitle");
+    if (subtitle && app.profilePhotoMode) subtitle.textContent = "Employee Profile Photo Capture";
     window.addEventListener("message", handleAttendancePortalMessage);
     return true;
 }
@@ -1297,6 +1302,16 @@ function handleAttendancePortalMessage(event) {
     if (event.origin !== app.parentOrigin) return;
     const data = event.data || {};
     if (data.ticket !== app.ticket) return;
+
+    if (data.type === "RJAB_PROFILE_PHOTO_ACK" && Number(data.version) === 1 && pendingProfilePhotoAck) {
+        if (data.ticket !== app.ticket) return;
+        const pendingProfile = pendingProfilePhotoAck;
+        pendingProfilePhotoAck = null;
+        clearTimeout(pendingProfile.timeoutId);
+        if (data.ok === true) pendingProfile.resolve(data);
+        else pendingProfile.reject(new Error(data.message || "The RJAB portal could not receive the profile photo."));
+        return;
+    }
 
     if (data.type === "RJAB_BIOMETRIC_COMPARE_TEMPLATE_TEST_RESULT" && Number(data.version) === 1) {
         if (!pendingBiometricWorkerCompare || data.requestId !== pendingBiometricWorkerCompare.requestId) return;
@@ -3524,6 +3539,70 @@ ctx.fillText(
 }
 
 // =====================================================
+// RETURN LIVE PROFILE SELFIE TO REGISTRATION PORTAL
+// No GPS, reverse geocoding, attendance watermark, attendance record or payroll event.
+// =====================================================
+
+async function uploadRegistrationProfilePhoto_() {
+    if (uploadInProgress) return;
+    if (!app.ticket || !attendanceParentWindow || !app.parentOrigin) {
+        throw new Error("Secure profile-photo handoff is not initialized. Reopen registration and launch the camera again.");
+    }
+    if (!app.photoData || !app.photoData.startsWith("data:image/jpeg;base64,")) {
+        throw new Error("The live profile selfie is missing. Capture the photo again.");
+    }
+    if (app.photoData.length > 3600000) {
+        throw new Error("The profile selfie is too large. Retake the photo using the camera.");
+    }
+
+    uploadInProgress = true;
+    setVerifyButton(false);
+    status.style.display = "block";
+    status.innerHTML = "🔐 Sending your live profile selfie to the RJAB registration form…";
+
+    const envelope = {
+        type: "RJAB_PROFILE_PHOTO_CAPTURE",
+        version: 1,
+        ticket: app.ticket,
+        photoDataUrl: app.photoData,
+        photoMimeType: "image/jpeg",
+        clientCapturedAt: app.clientCapturedAt || new Date().toISOString(),
+        cameraVersion: app.cameraVersion
+    };
+
+    const ack = await new Promise((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+            if (pendingProfilePhotoAck) pendingProfilePhotoAck = null;
+            reject(new Error("The RJAB registration form did not confirm receipt of the profile selfie. Return to the registration page and try again."));
+        }, 45000);
+        pendingProfilePhotoAck = { resolve, reject, timeoutId };
+        try {
+            attendanceParentWindow.postMessage(envelope, app.parentOrigin);
+        } catch (error) {
+            clearTimeout(timeoutId);
+            pendingProfilePhotoAck = null;
+            reject(new Error("Unable to send the profile selfie to the RJAB portal: " + error.message));
+        }
+    });
+
+    if (!ack || ack.ok !== true) throw new Error("RJAB registration did not confirm the profile selfie.");
+
+    status.innerHTML = '<div style="color:#22c55e;font-weight:bold;font-size:20px">✅ Profile Selfie Received</div><div style="margin-top:10px">Return to the RJAB registration form to review the photo and complete your biodata.</div>';
+    preview.style.opacity = "0.9";
+    preview.style.pointerEvents = "none";
+    captureBtn.disabled = true;
+    retakeBtn.disabled = true;
+    useBtn.disabled = true;
+    const buttons = document.querySelector(".buttons");
+    if (buttons) buttons.style.display = "none";
+    video.hidden = true;
+    guide.hidden = true;
+    app.photoData = "";
+    preview.src = "";
+    setTimeout(() => { try { window.close(); } catch (e) {} }, 900);
+}
+
+// =====================================================
 // RETURN CAPTURE TO AUTHENTICATED ATTENDANCE PORTAL
 // =====================================================
 
@@ -3644,6 +3723,22 @@ useBtn.onclick = async function () {
     setVerifyButton(false);
 
     controls.style.display = "none";
+
+    if (app.profilePhotoMode) {
+        qualityStatus.style.display = "none";
+        status.style.display = "block";
+        try {
+            await uploadRegistrationProfilePhoto_();
+        } catch (error) {
+            console.error(error);
+            uploadInProgress = false;
+            status.innerHTML = "❌ Profile photo transfer failed. Please try again.";
+            setVerifyButton(true);
+            controls.style.display = "flex";
+            qualityStatus.style.display = "block";
+        }
+        return;
+    }
 
     // Hide Photo Quality Panel
     qualityStatus.style.display = "none";
