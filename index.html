@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+    <meta name="referrer" content="no-referrer">
+
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+
+    <title>RJAB Attendance Camera</title>
+
+    <link rel="stylesheet" href="stylev3.css?v=20261124-attendance-1">
+    <link rel="stylesheet" href="attendance-fit.css?v=20261124-1">
+
+</head>
+
+<body>
+
+<div class="container">
+
+    <!-- HEADER -->
+
+    <header>
+
+        <h1>RJAB Corporation</h1>
+
+        <p class="subtitle">
+            Employee Attendance Photo Verification
+        </p>
+
+        <div id="attendanceContext" class="attendance-context" aria-live="polite">SECURE ATTENDANCE CAPTURE</div>
+
+    </header>
+
+    <!-- CAMERA -->
+
+    <div class="camera-box">
+
+        
+<!-- HUD DISPLAY -->
+
+<div class="hud hud-top-left">
+    ● LIVE
+</div>
+
+<!-- NIGHT MODE AND FLASH CONTROLS -->
+<div class="camera-extra-controls">
+
+    <button
+        type="button"
+        id="nightModeBtn"
+        class="camera-extra-btn"
+        aria-pressed="false">
+        ☾ NIGHT OFF
+    </button>
+
+    <button
+        type="button"
+        id="screenFlashBtn"
+        class="camera-extra-btn"
+        aria-pressed="false">
+        ⚡ FLASH OFF
+    </button>
+
+</div>
+
+<div class="hud hud-top-right">
+    AI SCAN
+</div>
+
+
+        <video
+            id="camera"
+            autoplay
+            playsinline
+            muted>
+        </video>
+
+        <canvas
+            id="canvas"
+            hidden>
+        </canvas>
+
+        <img
+            id="preview"
+            hidden>
+
+        <!-- FACE GUIDE -->
+
+        <div id="guide">
+
+            <span class="corner tl"></span>
+            <span class="corner tr"></span>
+            <span class="corner bl"></span>
+            <span class="corner br"></span>
+
+        </div>
+
+        <!-- COUNTDOWN -->
+
+        <div id="countdown" hidden>
+
+            3
+
+        </div>
+
+        <!-- FLASH -->
+
+        <div id="flash"></div>
+
+        <!-- CAMERA CONTROLS -->
+
+        <div class="buttons">
+
+        <!-- RETAKE -->
+
+            <button
+                id="retakeBtn"
+                hidden>
+
+                <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg">
+
+                    <path
+                        d="M7 6L3 10L7 14"
+                        stroke="#FFFFFF"
+                        stroke-width="3"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"/>
+
+                    <path
+                        d="M4 10H12
+                           C16 10 19 13 19 17"
+                        stroke="white"
+                        stroke-width="3"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"/>
+
+                </svg>
+
+            </button>
+
+            <!-- CAPTURE -->
+
+            <button id="captureBtn">
+
+                <svg
+                    viewBox="0 0 24 24"
+                    xmlns="http://www.w3.org/2000/svg">
+
+                    <path
+                        d="M7 5.5L8.8 3.5H15.2L17 5.5H19.5C20.33 5.5 21 6.17 21 7V18.5C21 19.33 20.33 20 19.5 20H4.5C3.67 20 3 19.33 3 18.5V7C3 6.17 3.67 5.5 4.5 5.5H7Z"
+                        fill="white"/>
+
+                    <circle
+                        cx="12"
+                        cy="12.5"
+                        r="4.2"
+                        fill="#2563EB"/>
+
+                    <circle
+                        cx="12"
+                        cy="12.5"
+                        r="2.5"
+                        fill="white"/>
+
+                    <circle
+                        cx="17.2"
+                        cy="8.3"
+                        r="0.8"
+                        fill="#2563EB"/>
+
+                </svg>
+
+            </button>
+
+            <!-- VERIFY -->
+
+            <button
+                id="useBtn"
+                hidden>
+
+                <svg
+                    viewBox="0 0 24 24"
+                    xmlns="http://www.w3.org/2000/svg">
+
+                    <path
+                        d="M6 12.5L10 16.5L18 8.5"
+                        fill="none"
+                        stroke="white"
+                        stroke-width="2.8"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"/>
+
+                </svg>
+
+            </button>
+
+        </div>
+
+    </div>
+
+    <div id="qualityStatus"></div>
+
+    <!-- STATUS -->
+
+    <div id="status">
+
+        Loading camera...
+
+    </div>
+
+
+</div>
+
+<script type="module" src="script.js?v=20261124-attendance-1"></script>
+
+<footer class="rjab-footer">
+  <div class="rjab-footer-divider"></div>
+  <p>© 2026 RJAB Corporation. All rights reserved.</p>
+ </footer>
+
+</body>
+</html>
