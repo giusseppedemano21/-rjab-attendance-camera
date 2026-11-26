@@ -1,5 +1,6 @@
 import {
     FaceDetector,
+    FaceLandmarker,
     FilesetResolver
 } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 
@@ -18,6 +19,33 @@ let liveFaceDetectorReady = false;
 let liveTrackingStarted = false;
 let lastLiveDetectionAt = 0;
 let noFaceFrames = 0;
+
+// Optional AI diagnostic mode is issued by Apps Script only when the
+// ATTENDANCE_AI_TEST_MODE script property is enabled. Normal attendance
+// launches do not download or initialize the EdgeFace/MiniFASNet models.
+const biometricAiTestMode = new URLSearchParams(window.location.search).get("aiTest") === "1";
+const BIOMETRIC_AI_MODEL_CONFIG = Object.freeze({
+    LANDMARKER_URL: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+    ORT_WASM_URL: "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/dist/",
+    EDGEFACE_URL: "./edgeface_xxs.onnx",
+    PAD_V2_URL: "./MiniFASNetV2.onnx",
+    PAD_V1SE_URL: "./MiniFASNetV1SE.onnx",
+    EDGEFACE_SHA256: "dc674de4cbc77fa0bf9a82d5149558ab8581d82a2cd3bb60f28fd1a5d3ff8a2f",
+    PAD_V2_SHA256: "b32929adc2d9c34b9486f8c4c7bc97c1b69bc0ea9befefc380e4faae4e463907",
+    PAD_V1SE_SHA256: "ebab7f90c7833fbccd46d3a555410e78d969db5438e169b6524be444862b3676",
+    EXPLORATORY_PAD_THRESHOLD: 0.80,
+    PAD_SAMPLE_COUNT: 5,
+    EMBEDDING_SAMPLE_COUNT: 3
+});
+let biometricAiReady = false;
+let biometricAiBusy = false;
+let biometricAiError = "";
+let biometricLandmarker = null;
+let biometricRecognitionSession = null;
+let biometricPadV2Session = null;
+let biometricPadV1seSession = null;
+let biometricReferenceEmbedding = null; // Memory-only; cleared on reload or explicit clear.
+let biometricAiVision = null;
 
 function updateCameraReadyState() {
 
@@ -90,6 +118,16 @@ async function initFaceDetector() {
         updateCameraReadyState();
         startLiveFaceTracking();
 
+        if (biometricAiTestMode) {
+            const aiPanel = document.getElementById("biometricAiLab");
+            if (aiPanel) aiPanel.hidden = false;
+            initializeBiometricAITest(vision).catch(function (aiError) {
+                biometricAiError = aiError && aiError.message ? aiError.message : String(aiError);
+                setBiometricAiStatus("AI diagnostics could not initialize: " + biometricAiError);
+                setBiometricAiResult("Normal selfie/GPS capture remains available. AI diagnostics are optional and are not part of attendance submission.");
+            });
+        }
+
     } catch (error) {
 
         console.error("❌ MediaPipe Face Detector failed:", error);
@@ -106,6 +144,406 @@ async function initFaceDetector() {
 
     }
 }
+// =====================================
+// OPTIONAL BIOMETRIC AI DIAGNOSTICS (TEST ONLY)
+// EdgeFace embedding + two MiniFASNet PAD models.
+// No image, embedding, PAD score, or identity result is sent to the portal.
+// =====================================
+
+function setBiometricAiStatus(message) {
+    const el = document.getElementById("biometricAiModelStatus");
+    if (el) el.textContent = message;
+}
+
+function setBiometricAiResult(message) {
+    const el = document.getElementById("biometricAiResult");
+    if (el) el.textContent = message;
+}
+
+function updateBiometricAiButtons() {
+    if (!biometricAiTestMode) return;
+    const live = !!(biometricAiReady && app && app.stream && video && !video.hidden && video.readyState >= 2 && video.videoWidth > 0);
+    const ref = document.getElementById("biometricAiReferenceBtn");
+    const compare = document.getElementById("biometricAiCompareBtn");
+    const pad = document.getElementById("biometricAiPadBtn");
+    const clear = document.getElementById("biometricAiClearBtn");
+    if (ref) ref.disabled = !live || biometricAiBusy;
+    if (compare) compare.disabled = !live || !biometricReferenceEmbedding || biometricAiBusy;
+    if (pad) pad.disabled = !live || biometricAiBusy;
+    if (clear) clear.disabled = !biometricReferenceEmbedding || biometricAiBusy;
+}
+
+function loadOnnxRuntimeForBiometricTest() {
+    if (window.ort && window.ort.InferenceSession) return Promise.resolve(window.ort);
+    return new Promise(function (resolve, reject) {
+        let script = document.querySelector('script[data-rjab-onnx-runtime="1"]');
+        if (script) {
+            script.addEventListener("load", function () { resolve(window.ort); }, { once: true });
+            script.addEventListener("error", function () { reject(new Error("ONNX Runtime Web could not be downloaded.")); }, { once: true });
+            return;
+        }
+        script = document.createElement("script");
+        script.src = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/dist/ort.min.js";
+        script.async = true;
+        script.dataset.rjabOnnxRuntime = "1";
+        script.onload = function () {
+            if (window.ort && window.ort.InferenceSession) resolve(window.ort);
+            else reject(new Error("ONNX Runtime Web loaded but its API is unavailable."));
+        };
+        script.onerror = function () { reject(new Error("ONNX Runtime Web could not be downloaded. Check internet access.")); };
+        document.head.appendChild(script);
+    });
+}
+
+async function loadVerifiedBiometricOnnx(url, expectedSha, label) {
+    const response = await fetch(url, { cache: "force-cache" });
+    if (!response.ok) throw new Error("Missing " + label + " model (HTTP " + response.status + "). Upload the exact ONNX file beside index.html.");
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    const actualSha = Array.from(new Uint8Array(digest), function (b) { return b.toString(16).padStart(2, "0"); }).join("");
+    if (actualSha !== expectedSha) throw new Error(label + " model checksum mismatch. Do not use or replace the verified model with an unverified file.");
+    return await window.ort.InferenceSession.create(bytes, {
+        executionProviders: ["wasm"],
+        graphOptimizationLevel: "all"
+    });
+}
+
+async function initializeBiometricAITest(vision) {
+    if (!biometricAiTestMode) return;
+    if (biometricAiReady) return;
+    setBiometricAiStatus("Loading Face Landmarker and ONNX Runtime. This is optional test mode…");
+    setBiometricAiResult("Please keep the camera page open. The existing capture controls remain available.");
+
+    const ort = await loadOnnxRuntimeForBiometricTest();
+    ort.env.wasm.wasmPaths = BIOMETRIC_AI_MODEL_CONFIG.ORT_WASM_URL;
+    ort.env.wasm.numThreads = 1;
+    ort.env.wasm.proxy = false;
+
+    biometricLandmarker = await FaceLandmarker.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: BIOMETRIC_AI_MODEL_CONFIG.LANDMARKER_URL, delegate: "CPU" },
+        runningMode: "VIDEO",
+        numFaces: 2,
+        outputFaceBlendshapes: false,
+        minFaceDetectionConfidence: 0.60,
+        minFacePresenceConfidence: 0.60,
+        minTrackingConfidence: 0.60
+    });
+
+    setBiometricAiStatus("Loading EdgeFace-XXS recognition model…");
+    biometricRecognitionSession = await loadVerifiedBiometricOnnx(
+        BIOMETRIC_AI_MODEL_CONFIG.EDGEFACE_URL,
+        BIOMETRIC_AI_MODEL_CONFIG.EDGEFACE_SHA256,
+        "EdgeFace-XXS"
+    );
+
+    setBiometricAiStatus("Loading MiniFASNet PAD models…");
+    biometricPadV2Session = await loadVerifiedBiometricOnnx(
+        BIOMETRIC_AI_MODEL_CONFIG.PAD_V2_URL,
+        BIOMETRIC_AI_MODEL_CONFIG.PAD_V2_SHA256,
+        "MiniFASNet V2"
+    );
+    biometricPadV1seSession = await loadVerifiedBiometricOnnx(
+        BIOMETRIC_AI_MODEL_CONFIG.PAD_V1SE_URL,
+        BIOMETRIC_AI_MODEL_CONFIG.PAD_V1SE_SHA256,
+        "MiniFASNet V1SE"
+    );
+
+    biometricAiReady = true;
+    setBiometricAiStatus("Ready · EdgeFace-XXS + MiniFASNet V2/V1SE loaded and checksum-verified.");
+    setBiometricAiResult("AI diagnostics are ready. Temporary reference and comparisons stay in this browser tab only.");
+    updateBiometricAiButtons();
+}
+
+function biometricSleep(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+}
+
+function getCurrentBiometricLandmarks() {
+    if (!biometricAiReady || !biometricLandmarker) throw new Error("AI models are not ready yet.");
+    if (!app || !app.stream || video.hidden || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+        throw new Error("The live camera is not active. Return to the camera preview and try again.");
+    }
+    const detection = biometricLandmarker.detectForVideo(video, performance.now());
+    const faces = detection.faceLandmarks || [];
+    if (faces.length !== 1) {
+        throw new Error(faces.length === 0 ? "No face was detected. Center your face and try again." : "More than one face was detected. Only one person should be in the camera frame.");
+    }
+    if (!faces[0] || faces[0].length < 264) throw new Error("Face landmarks are incomplete. Reposition your face and try again.");
+    return faces[0];
+}
+
+function biometricAveragePoints(indices, landmarks) {
+    const points = indices.map(function (index) { return landmarks[index]; });
+    return {
+        x: points.reduce(function (sum, point) { return sum + point.x; }, 0) / points.length * video.videoWidth,
+        y: points.reduce(function (sum, point) { return sum + point.y; }, 0) / points.length * video.videoHeight
+    };
+}
+
+function biometricFivePointLandmarks(landmarks) {
+    // Approximate five-point alignment adapted from the Phase 2B/2C prototype.
+    // Validate alignment on RJAB device samples before treating scores as operational.
+    return [
+        biometricAveragePoints([33, 133], landmarks),
+        biometricAveragePoints([362, 263], landmarks),
+        biometricAveragePoints([1], landmarks),
+        biometricAveragePoints([61], landmarks),
+        biometricAveragePoints([291], landmarks)
+    ];
+}
+
+function biometricSimilarityTransform(source, target) {
+    const count = source.length;
+    const srcMean = { x: 0, y: 0 };
+    const dstMean = { x: 0, y: 0 };
+    for (let i = 0; i < count; i++) {
+        srcMean.x += source[i].x / count;
+        srcMean.y += source[i].y / count;
+        dstMean.x += target[i].x / count;
+        dstMean.y += target[i].y / count;
+    }
+    let dot = 0, cross = 0, variance = 0;
+    for (let i = 0; i < count; i++) {
+        const sx = source[i].x - srcMean.x;
+        const sy = source[i].y - srcMean.y;
+        const dx = target[i].x - dstMean.x;
+        const dy = target[i].y - dstMean.y;
+        dot += sx * dx + sy * dy;
+        cross += sx * dy - sy * dx;
+        variance += sx * sx + sy * sy;
+    }
+    if (variance < 1e-6) throw new Error("Face landmarks are too close together. Reposition your face.");
+    const a = dot / variance;
+    const b = cross / variance;
+    const tx = dstMean.x - (a * srcMean.x - b * srcMean.y);
+    const ty = dstMean.y - (b * srcMean.x + a * srcMean.y);
+    return { a: a, b: b, c: -b, d: a, e: tx, f: ty };
+}
+
+async function makeBiometricEmbedding(landmarks) {
+    if (!biometricRecognitionSession) throw new Error("EdgeFace recognition model is not loaded.");
+    const alignedCanvas = makeBiometricEmbedding.canvas || (makeBiometricEmbedding.canvas = document.createElement("canvas"));
+    alignedCanvas.width = 112;
+    alignedCanvas.height = 112;
+    const ctx = alignedCanvas.getContext("2d", { willReadFrequently: true });
+    const target = [
+        { x: 38.2946, y: 51.6963 },
+        { x: 73.5318, y: 51.5014 },
+        { x: 56.0252, y: 71.7366 },
+        { x: 41.5493, y: 92.3655 },
+        { x: 70.7299, y: 92.2041 }
+    ];
+    const transform = biometricSimilarityTransform(biometricFivePointLandmarks(landmarks), target);
+    ctx.setTransform(transform.a, transform.b, transform.c, transform.d, transform.e, transform.f);
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, 112, 112);
+    ctx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+    const pixels = ctx.getImageData(0, 0, 112, 112).data;
+    const plane = 112 * 112;
+    const input = new Float32Array(3 * plane);
+    for (let i = 0, p = 0; i < plane; i++) {
+        const r = pixels[p++];
+        const g = pixels[p++];
+        const b = pixels[p++];
+        p++;
+        input[i] = (r - 127.5) / 127.5;
+        input[plane + i] = (g - 127.5) / 127.5;
+        input[2 * plane + i] = (b - 127.5) / 127.5;
+    }
+
+    const session = biometricRecognitionSession;
+    const output = await session.run({ [session.inputNames[0]]: new window.ort.Tensor("float32", input, [1, 3, 112, 112]) });
+    const raw = output[session.outputNames[0]].data;
+    if (!raw || raw.length !== 512) throw new Error("EdgeFace returned an unexpected embedding size (expected 512 values).");
+    const embedding = new Float32Array(raw.length);
+    let norm = 0;
+    for (let i = 0; i < raw.length; i++) norm += raw[i] * raw[i];
+    norm = Math.sqrt(norm);
+    if (!norm || !Number.isFinite(norm)) throw new Error("EdgeFace returned an invalid embedding.");
+    for (let i = 0; i < raw.length; i++) embedding[i] = raw[i] / norm;
+    return embedding;
+}
+
+async function captureBiometricTestEmbeddingSet(label) {
+    const embeddings = [];
+    for (let i = 0; i < BIOMETRIC_AI_MODEL_CONFIG.EMBEDDING_SAMPLE_COUNT; i++) {
+        await biometricSleep(i === 0 ? 100 : 350);
+        const landmarks = getCurrentBiometricLandmarks();
+        setBiometricAiResult(label + " · processing sample " + (i + 1) + " of 3… Keep one face centered.");
+        embeddings.push(await makeBiometricEmbedding(landmarks));
+    }
+    const average = new Float32Array(embeddings[0].length);
+    for (const embedding of embeddings) {
+        if (embedding.length !== average.length) throw new Error("Embedding dimension mismatch.");
+        for (let i = 0; i < embedding.length; i++) average[i] += embedding[i] / embeddings.length;
+    }
+    let norm = 0;
+    for (let i = 0; i < average.length; i++) norm += average[i] * average[i];
+    norm = Math.sqrt(norm);
+    if (!norm) throw new Error("Could not normalize the averaged face embedding.");
+    for (let i = 0; i < average.length; i++) average[i] /= norm;
+    return average;
+}
+
+function biometricCosineSimilarity(a, b) {
+    if (!a || !b || a.length !== b.length) throw new Error("Temporary reference is missing or incompatible.");
+    let dot = 0;
+    for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
+    return dot;
+}
+
+function biometricClamp(value, low, high) {
+    return Math.max(low, Math.min(high, value));
+}
+
+function biometricMedian(values) {
+    const sorted = values.slice().sort(function (a, b) { return a - b; });
+    const middle = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function makeBiometricPadTensor(scale, landmarks) {
+    if (!landmarks || video.readyState < 2) throw new Error("A clear face must be visible before PAD analysis.");
+    const xs = landmarks.map(function (point) { return point.x; });
+    const ys = landmarks.map(function (point) { return point.y; });
+    const bx = Math.min.apply(null, xs) * video.videoWidth;
+    const by = Math.min.apply(null, ys) * video.videoHeight;
+    const bw = (Math.max.apply(null, xs) - Math.min.apply(null, xs)) * video.videoWidth;
+    const bh = (Math.max.apply(null, ys) - Math.min.apply(null, ys)) * video.videoHeight;
+    if (bw < 40 || bh < 40) throw new Error("Face is too small for PAD analysis. Move a little closer.");
+
+    const factor = Math.min((video.videoHeight - 1) / bh, (video.videoWidth - 1) / bw, scale);
+    const cropW = bw * factor;
+    const cropH = bh * factor;
+    const cx = bx + bw / 2;
+    const cy = by + bh / 2;
+    let left = cx - cropW / 2;
+    let top = cy - cropH / 2;
+    let right = cx + cropW / 2;
+    let bottom = cy + cropH / 2;
+    if (left < 0) { right -= left; left = 0; }
+    if (top < 0) { bottom -= top; top = 0; }
+    if (right > video.videoWidth - 1) { left -= right - video.videoWidth + 1; right = video.videoWidth - 1; }
+    if (bottom > video.videoHeight - 1) { top -= bottom - video.videoHeight + 1; bottom = video.videoHeight - 1; }
+    left = biometricClamp(left, 0, video.videoWidth - 2);
+    top = biometricClamp(top, 0, video.videoHeight - 2);
+    right = biometricClamp(right, left + 1, video.videoWidth - 1);
+    bottom = biometricClamp(bottom, top + 1, video.videoHeight - 1);
+
+    const cropCanvas = makeBiometricPadTensor.canvas || (makeBiometricPadTensor.canvas = document.createElement("canvas"));
+    cropCanvas.width = 80;
+    cropCanvas.height = 80;
+    const ctx = cropCanvas.getContext("2d", { willReadFrequently: true });
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, 80, 80);
+    ctx.drawImage(video, left, top, right - left, bottom - top, 0, 0, 80, 80);
+    const pixels = ctx.getImageData(0, 0, 80, 80).data;
+    const plane = 80 * 80;
+    const input = new Float32Array(3 * plane);
+    for (let i = 0, p = 0; i < plane; i++) {
+        const r = pixels[p++];
+        const g = pixels[p++];
+        const b = pixels[p++];
+        p++;
+        input[i] = b;
+        input[plane + i] = g;
+        input[2 * plane + i] = r;
+    }
+    return new window.ort.Tensor("float32", input, [1, 3, 80, 80]);
+}
+
+function biometricSoftmax3(values) {
+    const maxValue = Math.max.apply(null, values);
+    const exps = values.map(function (value) { return Math.exp(value - maxValue); });
+    const total = exps.reduce(function (sum, value) { return sum + value; }, 0) || 1;
+    return exps.map(function (value) { return value / total; });
+}
+
+async function predictBiometricPadModel(session, cropScale, landmarks) {
+    const result = await session.run({ [session.inputNames[0]]: makeBiometricPadTensor(cropScale, landmarks) });
+    const logits = Array.from(result[session.outputNames[0]].data).slice(0, 3);
+    if (logits.length !== 3) throw new Error("PAD model returned an unexpected output size.");
+    const probabilities = biometricSoftmax3(logits);
+    return probabilities[1]; // Reference prototype maps class index 1 to Real.
+}
+
+async function runBiometricPadDiagnostic() {
+    if (biometricAiBusy) return;
+    biometricAiBusy = true;
+    updateBiometricAiButtons();
+    try {
+        const v2Scores = [];
+        const v1Scores = [];
+        for (let i = 0; i < BIOMETRIC_AI_MODEL_CONFIG.PAD_SAMPLE_COUNT; i++) {
+            await biometricSleep(i === 0 ? 100 : 180);
+            const landmarks = getCurrentBiometricLandmarks();
+            setBiometricAiResult("PAD diagnostic · analyzing frame " + (i + 1) + " of 5…");
+            v2Scores.push(await predictBiometricPadModel(biometricPadV2Session, 2.7, landmarks));
+            v1Scores.push(await predictBiometricPadModel(biometricPadV1seSession, 4.0, landmarks));
+        }
+        const v2Median = biometricMedian(v2Scores);
+        const v1Median = biometricMedian(v1Scores);
+        const exploratoryFlag = v2Median >= BIOMETRIC_AI_MODEL_CONFIG.EXPLORATORY_PAD_THRESHOLD && v1Median >= BIOMETRIC_AI_MODEL_CONFIG.EXPLORATORY_PAD_THRESHOLD;
+        setBiometricAiResult(
+            "PAD scores (median live-class probability): V2 " + v2Median.toFixed(4) + " · V1SE " + v1Median.toFixed(4) + ". " +
+            (exploratoryFlag ? "Both passed the prototype's exploratory 0.80 flag." : "One or both did not meet the prototype's exploratory 0.80 flag.") +
+            " This is not proof of liveness and does not authorize attendance."
+        );
+    } catch (error) {
+        setBiometricAiResult("PAD diagnostic failed: " + (error && error.message ? error.message : String(error)));
+    } finally {
+        biometricAiBusy = false;
+        updateBiometricAiButtons();
+    }
+}
+
+function bindBiometricAiTestControls() {
+    if (!biometricAiTestMode) return;
+    const referenceBtn = document.getElementById("biometricAiReferenceBtn");
+    const compareBtn = document.getElementById("biometricAiCompareBtn");
+    const padBtn = document.getElementById("biometricAiPadBtn");
+    const clearBtn = document.getElementById("biometricAiClearBtn");
+    if (referenceBtn) referenceBtn.addEventListener("click", async function () {
+        if (biometricAiBusy) return;
+        biometricAiBusy = true;
+        updateBiometricAiButtons();
+        try {
+            biometricReferenceEmbedding = await captureBiometricTestEmbeddingSet("Reference capture");
+            setBiometricAiResult("Temporary test reference captured (512 values, 3-sample average). It exists only in this browser tab; it has not been saved or transmitted.");
+        } catch (error) {
+            biometricReferenceEmbedding = null;
+            setBiometricAiResult("Reference capture failed: " + (error && error.message ? error.message : String(error)));
+        } finally {
+            biometricAiBusy = false;
+            updateBiometricAiButtons();
+        }
+    });
+    if (compareBtn) compareBtn.addEventListener("click", async function () {
+        if (biometricAiBusy || !biometricReferenceEmbedding) return;
+        biometricAiBusy = true;
+        updateBiometricAiButtons();
+        try {
+            const candidate = await captureBiometricTestEmbeddingSet("Face comparison");
+            const score = biometricCosineSimilarity(biometricReferenceEmbedding, candidate);
+            setBiometricAiResult("Cosine similarity: " + score.toFixed(4) + " (range is typically -1 to 1). No accept/reject threshold is applied. Repeat with the same consenting tester, then a different consenting tester. This is a browser-only comparison against the temporary in-memory reference, not the employee's registered template.");
+        } catch (error) {
+            setBiometricAiResult("Face comparison failed: " + (error && error.message ? error.message : String(error)));
+        } finally {
+            biometricAiBusy = false;
+            updateBiometricAiButtons();
+        }
+    });
+    if (padBtn) padBtn.addEventListener("click", runBiometricPadDiagnostic);
+    if (clearBtn) clearBtn.addEventListener("click", function () {
+        biometricReferenceEmbedding = null;
+        setBiometricAiResult("Temporary test reference cleared from this page's JavaScript memory.");
+        updateBiometricAiButtons();
+    });
+    updateBiometricAiButtons();
+}
+
 // =====================================
 // DETECT FACES
 // =====================================
@@ -726,8 +1164,11 @@ const app = {
     ticket: "",
     parentOrigin: "",
     type: "",
-    cameraVersion: "attendance-camera-1.0.0"
+    cameraVersion: "attendance-camera-1.1.0-phase2g1"
 };
+
+// Bind the optional test controls only after the attendance state exists.
+bindBiometricAiTestControls();
 
 // ============================
 // SECURE ATTENDANCE HANDOFF
@@ -1430,6 +1871,7 @@ async function startCamera() {
         setVerifyButton(true);
         
         updateCameraReadyState();
+        updateBiometricAiButtons();
         
         if (!faceDetectorReady) {
         
@@ -1703,6 +2145,7 @@ function capturePhoto(){
         video.srcObject = null;
         app.stream = null;
     }
+    updateBiometricAiButtons();
 
     preview.src = app.photoData;
 

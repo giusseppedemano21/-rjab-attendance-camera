@@ -22,3 +22,72 @@ body { overscroll-behavior-y: contain; }
   .container { gap: 10px; }
   .attendance-context { margin-top: 8px; padding: 6px 10px; }
 }
+
+
+/* Optional Face AI test panel — only visible when the backend issues aiTest=1. */
+.biometric-ai-lab {
+  width: min(100%, 720px);
+  margin: 16px auto 12px;
+  padding: 16px;
+  border: 1px solid rgba(96, 165, 250, .45);
+  border-radius: 16px;
+  background: rgba(15, 23, 42, .96);
+  color: #e5eefc;
+  box-sizing: border-box;
+  text-align: left;
+}
+.biometric-ai-lab[hidden] { display: none !important; }
+.biometric-ai-lab__eyebrow {
+  color: #93c5fd;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .12em;
+}
+.biometric-ai-lab h2 {
+  margin: 7px 0 8px;
+  font-size: 18px;
+  line-height: 1.25;
+  color: #fff;
+}
+.biometric-ai-lab__notice {
+  margin: 0 0 12px;
+  color: #cbd5e1;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.biometric-ai-lab__status,
+.biometric-ai-lab__result {
+  padding: 10px 11px;
+  border-radius: 10px;
+  background: rgba(30, 41, 59, .95);
+  color: #e2e8f0;
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.biometric-ai-lab__actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+.biometric-ai-lab__actions button {
+  min-height: 42px;
+  padding: 9px 10px;
+  border: 1px solid rgba(147, 197, 253, .45);
+  border-radius: 10px;
+  background: #1d4ed8;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.biometric-ai-lab__actions button:disabled {
+  opacity: .42;
+  cursor: not-allowed;
+}
+.biometric-ai-lab__actions button:last-child { background: #334155; }
+@media (max-width: 420px) {
+  .biometric-ai-lab { padding: 13px; }
+  .biometric-ai-lab__actions { grid-template-columns: 1fr; }
+}

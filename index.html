@@ -12,7 +12,7 @@
     <title>RJAB Attendance Camera</title>
 
     <link rel="stylesheet" href="stylev3.css?v=20261124-attendance-1">
-    <link rel="stylesheet" href="attendance-fit.css?v=20261126-2">
+    <link rel="stylesheet" href="attendance-fit.css?v=20261126-phase2g1">
 
 </head>
 
@@ -206,6 +206,24 @@
 
     <div id="qualityStatus"></div>
 
+    <!-- OPTIONAL, TEST-ONLY FACE AI DIAGNOSTICS. Hidden during normal attendance use. -->
+    <section id="biometricAiLab" class="biometric-ai-lab" hidden aria-live="polite">
+        <div class="biometric-ai-lab__eyebrow">RJAB BIOMETRIC AI · TEST MODE</div>
+        <h2>Face Recognition & PAD Diagnostics</h2>
+        <p class="biometric-ai-lab__notice">
+            Experimental testing only. The temporary reference stays in this browser tab and is not sent to RJAB or stored.
+            Scores are not an attendance approval or proof of liveness.
+        </p>
+        <div class="biometric-ai-lab__status" id="biometricAiModelStatus">AI models have not been loaded.</div>
+        <div class="biometric-ai-lab__actions">
+            <button type="button" id="biometricAiReferenceBtn" disabled>Capture Test Reference (3 samples)</button>
+            <button type="button" id="biometricAiCompareBtn" disabled>Compare Current Face (3 samples)</button>
+            <button type="button" id="biometricAiPadBtn" disabled>Run PAD Diagnostic (5 frames)</button>
+            <button type="button" id="biometricAiClearBtn" disabled>Clear Test Reference</button>
+        </div>
+        <div class="biometric-ai-lab__result" id="biometricAiResult">Waiting for AI model initialization.</div>
+    </section>
+
     <!-- STATUS -->
 
     <div id="status">
@@ -217,7 +235,7 @@
 
 </div>
 
-<script type="module" src="script.js?v=20261124-attendance-1"></script>
+<script type="module" src="script.js?v=20261126-phase2g1"></script>
 
 <footer class="rjab-footer">
   <div class="rjab-footer-divider"></div>
